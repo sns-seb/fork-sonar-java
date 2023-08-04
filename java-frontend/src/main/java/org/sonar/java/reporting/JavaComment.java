@@ -19,23 +19,24 @@
  */
 package org.sonar.java.reporting;
 
+import java.util.List;
 import org.sonar.api.batch.fs.InputFile;
 import org.sonar.plugins.java.api.tree.SyntaxTrivia;
 
 public class JavaComment {
   private final InputFile inputFile;
-  private final SyntaxTrivia syntaxTrivia;
+  private final List<SyntaxTrivia> triviaSeries;
 
-  public JavaComment(InputFile inputFile, SyntaxTrivia syntaxTrivia) {
+  public JavaComment(InputFile inputFile, List<SyntaxTrivia> triviaSeries) {
     this.inputFile = inputFile;
-    this.syntaxTrivia = syntaxTrivia;
+    this.triviaSeries = triviaSeries;
   }
 
   public InputFile getInputFile() {
     return inputFile;
   }
 
-  public SyntaxTrivia getSyntaxTrivia() {
-    return syntaxTrivia;
+  public List<SyntaxTrivia> getTriviaSeries() {
+    return triviaSeries;
   }
 }

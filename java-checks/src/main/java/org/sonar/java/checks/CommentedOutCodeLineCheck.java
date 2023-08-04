@@ -19,12 +19,21 @@
  */
 package org.sonar.java.checks;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
 import javax.annotation.Nullable;
 import org.apache.commons.lang3.StringUtils;
+import org.sonar.api.utils.log.Logger;
+import org.sonar.api.utils.log.Loggers;
 import org.sonar.check.Rule;
+import org.sonar.java.checks.s125model.CommentPreparation;
+import org.sonar.java.checks.s125model.FeatureExtractor;
+import org.sonar.java.checks.s125model.Model;
+import org.sonar.java.checks.s125model.RoBERTaBPEEncoder;
+import org.sonar.java.checks.s125model.RoBERTaTokenizer;
 import org.sonar.java.model.DefaultJavaFileScannerContext;
 import org.sonar.java.model.LineUtils;
 import org.sonar.java.reporting.AnalyzerMessage;
@@ -59,12 +68,111 @@ public class CommentedOutCodeLineCheck extends IssuableSubscriptionVisitor {
 
   @Override
   public void visitToken(SyntaxToken syntaxToken) {
+    if (context.useS125Model()) {
+      try {
+        modelVisitToken(syntaxToken);
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
+    } else {
+      originalVisitToken(syntaxToken);
+    }
+  }
+
+  private void modelVisitToken(SyntaxToken syntaxToken) throws IOException {
+    List<SyntaxTrivia> lineCommentSeries = new ArrayList<>(1);
+    int previousLineCommentLine = -1;
+    for (SyntaxTrivia syntaxTrivia : syntaxToken.trivias()) {
+      int currentLine = LineUtils.startLine(syntaxTrivia);
+
+      if (isJavadoc(syntaxTrivia.comment())) {
+        continue;
+      }
+
+      if (syntaxTrivia.isBlock()) {
+        // run model on any ongoing line comment series and reset state
+        runModel(lineCommentSeries);
+        previousLineCommentLine = LineUtils.endLine(syntaxTrivia);
+        lineCommentSeries.clear();
+
+        // run the model on block comment
+        runModel(List.of(syntaxTrivia));
+      } else if (previousLineCommentLine == -1 || currentLine <= previousLineCommentLine + 1) {
+        // add line comment to ongoing line comment series (or start it) and move on
+        lineCommentSeries.add(syntaxTrivia);
+        previousLineCommentLine = currentLine;
+      } else {
+        // run model on ongoing line comment series and reset state
+        runModel(lineCommentSeries);
+        previousLineCommentLine = currentLine;
+        lineCommentSeries.clear();
+
+        // start a new series of lines comments
+        lineCommentSeries.add(syntaxTrivia);
+      }
+    }
+
+    // run model on any ongoing series
+    runModel(lineCommentSeries);
+  }
+
+  private static final int MAX_TOKENS_PER_STRING = 500;
+  private static final double DECISION_THRESHOLD = 0.83d;
+
+  private CommentPreparation commentPreparation;
+  private RoBERTaTokenizer tokenizer;
+  private FeatureExtractor featureExtractor;
+  private Model model;
+
+  private static final Logger LOGGER = Loggers.get(CommentedOutCodeLineCheck.class);
+
+  private void runModel(List<SyntaxTrivia> triviaSeries) throws IOException {
+    if (triviaSeries.isEmpty()) {
+      return;
+    }
+
+    DefaultJavaFileScannerContext scannerContext = (DefaultJavaFileScannerContext) this.context;
+    scannerContext.captureComment(new JavaComment(context.getInputFile(), triviaSeries));
+
+    ensureModelIsLoaded();
+
+    String rawComment = triviaSeries.stream().flatMap(t -> LineUtils.splitLines(t.comment()).stream()).collect(Collectors.joining("\n"));
+    String comment = commentPreparation.stripCommentSigns(rawComment);
+    String[] tokens = tokenizer.tokenize(comment);
+    double[] features = featureExtractor.extractFrom(tokens);
+    Model.Prediction prediction = model.predict(features);
+    LOGGER.info("LR: " + prediction.getLinearRegression() + ", NR: " + prediction.getNormalizedRegression() + ", Decision:" + prediction.getDecision() + "\n" + rawComment);
+    if (prediction.getDecision() == 1) {
+      SyntaxTrivia firstTrivia = triviaSeries.get(0);
+      Position start = firstTrivia.range().start();
+
+      SyntaxTrivia lastTrivia = triviaSeries.get(triviaSeries.size() - 1);
+      Position end = lastTrivia.range().end();
+
+      AnalyzerMessage.TextSpan textSpan = new AnalyzerMessage.TextSpan(
+        start.line(), start.column() - 1,
+        end.line(), end.column() - 1);
+
+      scannerContext.reportIssue(new AnalyzerMessage(this, context.getInputFile(), textSpan, MESSAGE, 0));
+    }
+  }
+
+  private void ensureModelIsLoaded() throws IOException {
+    if (model == null) {
+      this.commentPreparation = new CommentPreparation();
+      this.tokenizer = new RoBERTaTokenizer(new RoBERTaBPEEncoder(getClass().getResourceAsStream("s125model/merges.txt")));
+      this.featureExtractor = FeatureExtractor.create(getClass().getResourceAsStream("s125model/vocab-100.json"), MAX_TOKENS_PER_STRING);
+      this.model = Model.create(getClass().getResourceAsStream("s125model/model-lr-100.json"), DECISION_THRESHOLD);
+    }
+  }
+
+  private void originalVisitToken(SyntaxToken syntaxToken) {
     DefaultJavaFileScannerContext scannerContext = (DefaultJavaFileScannerContext) this.context;
     List<AnalyzerMessage> issues = new ArrayList<>();
     AnalyzerMessage previousRelatedIssue = null;
     int previousCommentLine = -1;
     for (SyntaxTrivia syntaxTrivia : syntaxToken.trivias()) {
-      scannerContext.captureComment(new JavaComment(context.getInputFile(), syntaxTrivia));
+      scannerContext.captureComment(new JavaComment(context.getInputFile(), List.of(syntaxTrivia)));
       int currentCommentLine = LineUtils.startLine(syntaxTrivia);
       if (currentCommentLine != previousCommentLine + 1 &&
         currentCommentLine != previousCommentLine) {
