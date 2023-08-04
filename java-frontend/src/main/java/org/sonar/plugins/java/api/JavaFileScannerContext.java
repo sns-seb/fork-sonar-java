@@ -164,4 +164,6 @@ public interface JavaFileScannerContext extends InputFileScannerContext {
   default Optional<SourceMap> sourceMap() {
     return Optional.empty();
   }
+
+  default boolean useS125Model() { return false; }
 }

@@ -125,8 +125,8 @@ public class SonarComponents {
   private boolean alreadyLoggedSkipStatus = false;
 
   public SonarComponents(FileLinesContextFactory fileLinesContextFactory, FileSystem fs,
-    ClasspathForMain javaClasspath, ClasspathForTest javaTestClasspath,
-    CheckFactory checkFactory) {
+                         ClasspathForMain javaClasspath, ClasspathForTest javaTestClasspath,
+                         CheckFactory checkFactory) {
     this(fileLinesContextFactory, fs, javaClasspath, javaTestClasspath, checkFactory, null, null);
   }
 
@@ -134,8 +134,8 @@ public class SonarComponents {
    * Will be called in SonarLint context when custom rules are present
    */
   public SonarComponents(FileLinesContextFactory fileLinesContextFactory, FileSystem fs,
-    ClasspathForMain javaClasspath, ClasspathForTest javaTestClasspath, CheckFactory checkFactory,
-    @Nullable CheckRegistrar[] checkRegistrars) {
+                         ClasspathForMain javaClasspath, ClasspathForTest javaTestClasspath, CheckFactory checkFactory,
+                         @Nullable CheckRegistrar[] checkRegistrars) {
     this(fileLinesContextFactory, fs, javaClasspath, javaTestClasspath, checkFactory, checkRegistrars, null);
   }
 
@@ -143,8 +143,8 @@ public class SonarComponents {
    * Will be called in SonarScanner context when no custom rules is present
    */
   public SonarComponents(FileLinesContextFactory fileLinesContextFactory, FileSystem fs,
-    ClasspathForMain javaClasspath, ClasspathForTest javaTestClasspath, CheckFactory checkFactory,
-    @Nullable ProjectDefinition projectDefinition) {
+                         ClasspathForMain javaClasspath, ClasspathForTest javaTestClasspath, CheckFactory checkFactory,
+                         @Nullable ProjectDefinition projectDefinition) {
     this(fileLinesContextFactory, fs, javaClasspath, javaTestClasspath, checkFactory, null, projectDefinition);
   }
 
@@ -152,8 +152,8 @@ public class SonarComponents {
    * ProjectDefinition class is not available in SonarLint context, so this constructor will never be called when using SonarLint
    */
   public SonarComponents(FileLinesContextFactory fileLinesContextFactory, FileSystem fs,
-    ClasspathForMain javaClasspath, ClasspathForTest javaTestClasspath, CheckFactory checkFactory,
-    @Nullable CheckRegistrar[] checkRegistrars, @Nullable ProjectDefinition projectDefinition) {
+                         ClasspathForMain javaClasspath, ClasspathForTest javaTestClasspath, CheckFactory checkFactory,
+                         @Nullable CheckRegistrar[] checkRegistrars, @Nullable ProjectDefinition projectDefinition) {
     this.fileLinesContextFactory = fileLinesContextFactory;
     this.fs = fs;
     this.javaClasspath = javaClasspath;
@@ -280,21 +280,31 @@ public class SonarComponents {
   }
 
   public void captureComment(JavaComment javaComment) {
-    NewComment newComment = context.newComment();
+    List<SyntaxTrivia> triviaSeries = javaComment.getTriviaSeries();
+    if (triviaSeries.size() > 1 && triviaSeries.stream().anyMatch(SyntaxTrivia::isBlock)) {
+      throw new IllegalStateException("Series of Trivia must not contain block comments");
+    }
 
-    SyntaxTrivia syntaxTrivia = javaComment.getSyntaxTrivia();
-    Range range = syntaxTrivia.range();
-    int startLine = range.start().line();
-    int startLineOffset = range.start().column();
-    int endLine = range.end().line();
-    int endLineOffset = range.end().column();
+    SyntaxTrivia firstTrivia = triviaSeries.get(0);
+    Range firstRange = firstTrivia.range();
+    int startLine = firstRange.start().line();
+    int startLineOffset = firstRange.start().column();
 
+    SyntaxTrivia lastTrivia = triviaSeries.get(triviaSeries.size() - 1);
+    Range lastRange = lastTrivia.range();
+    int endLine = lastRange.end().line();
+    int endLineOffset = lastRange.end().column();
+    boolean block = firstTrivia.isBlock();
+
+    List<String> lines = triviaSeries.stream().flatMap(t -> LineUtils.splitLines(t.comment()).stream()).collect(Collectors.toUnmodifiableList());
     InputFile inputFile = javaComment.getInputFile();
-    newComment.at(newComment.newCommentLocation()
-      .on(inputFile)
-      .at(inputFile.newRange(startLine, startLineOffset - 1, endLine, endLineOffset - 1)))
-      .setType(syntaxTrivia.isBlock() ? Comment.Type.BLOCK : Comment.Type.LINE)
-      .setLines(LineUtils.splitLines(syntaxTrivia.comment()))
+    NewComment newComment = context.newComment();
+    newComment.at(
+        newComment.newCommentLocation()
+          .on(inputFile)
+          .at(inputFile.newRange(startLine, startLineOffset - 1, endLine, endLineOffset - 1)))
+      .setType(block ? Comment.Type.BLOCK : Comment.Type.LINE)
+      .setLines(lines)
       .save();
   }
 
@@ -567,5 +577,9 @@ public class SonarComponents {
 
   public SensorContext context() {
     return context;
+  }
+
+  public boolean useS125Model() {
+    return context.config().getBoolean("sonar.java.s125.useModel").orElse(false);
   }
 }

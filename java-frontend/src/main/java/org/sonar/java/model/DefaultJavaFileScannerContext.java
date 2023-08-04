@@ -234,4 +234,9 @@ public class DefaultJavaFileScannerContext extends DefaultInputFileScannerContex
   public JavaIssueBuilder newIssue() {
     return new InternalJavaIssueBuilder(inputFile, sonarComponents);
   }
+
+  @Override
+  public boolean useS125Model() {
+    return sonarComponents.useS125Model();
+  }
 }
